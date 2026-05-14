@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>NEON DASH | Platformer Edition</title>
+    <style>
+        :root {
+            --neon-blue: #00f2ff;
+            --neon-pink: #ff00de;
+            --neon-green: #00ff62;
+            --bg-dark: #0a0a0c;
+        }
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            overflow: hidden; background-color: var(--bg-dark);
+            font-family: 'Segoe UI', sans-serif; color: white;
+            user-select: none; touch-action: none;
+        }
+        #game-container { position: relative; width: 100vw; height: 100vh; }
+        canvas { display: block; width: 100%; height: 100%; }
+        .overlay {
+            position: absolute; inset: 0; display: flex; flex-direction: column;
+            justify-content: center; align-items: center;
+            background: rgba(0, 0, 0, 0.85); z-index: 100;
+        }
+        .hidden { display: none !important; }
+        h1 {
+            font-size: clamp(2rem, 8vw, 4rem); margin-bottom: 2rem;
+            text-transform: uppercase; letter-spacing: 10px;
+            text-shadow: 0 0 20px var(--neon-blue);
+        }
+        .menu-btns { display: flex; gap: 15px; flex-wrap: wrap; justify-content: center; }
+        button {
+            padding: 15px 35px; font-size: 1rem; background: transparent;
+            color: white; border: 2px solid white; cursor: pointer;
+            transition: 0.2s; text-transform: uppercase; font-weight: bold;
+        }
+        button:hover { background: white; color: black; box-shadow: 0 0 20px white; }
+        .btn-easy { border-color: var(--neon-green); color: var(--neon-green); }
+        .btn-med { border-color: var(--neon-blue); color: var(--neon-blue); }
+        .btn-hard { border-color: var(--neon-pink); color: var(--neon-pink); }
+        #hud { position: absolute; top: 20px; left: 20px; font-size: 1.5rem; z-index: 10; }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <div id="hud">Score: <span id="current-score">0</span></div>
+    
+    <div id="main-menu" class="overlay">
+        <h1>NEON DASH</h1>
+        <div class="menu-btns">
+            <button class="btn-easy" onclick="start('easy')">Easy</button>
+            <button class="btn-med" onclick="start('medium')">Medium</button>
+            <button class="btn-hard" onclick="start('extreme')">Extreme</button>
+        </div>
+    </div>
+
+    <div id="game-over" class="overlay hidden">
+        <h1 style="color: #ff3366;">CRASHED</h1>
+        <button onclick="location.reload()">Return to Menu</button>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const scoreEl = document.getElementById('current-score');
+const mainMenu = document.getElementById('main-menu');
+const gameOverScreen = document.getElementById('game-over');
+
+const LEVELS = {
+    easy: { speed: 7, color: '#00ff62', bg: '#051005', gravity: 0.9 },
+    medium: { speed: 9, color: '#00f2ff', bg: '#050a10', gravity: 1.0 },
+    extreme: { speed: 12, color: '#ff00de', bg: '#10050a', gravity: 1.2 }
+};
+
+let state = 'MENU';
+let score = 0;
+let gameSpeed, levelData, player, objects, frameCount;
+const GROUND_Y = 100;
+
+function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+class Player {
+    constructor() {
+        this.size = 38;
+        this.x = 150;
+        this.y = canvas.height - GROUND_Y - this.size;
+        this.vy = 0;
+        this.rotation = 0;
+        this.grounded = true;
+    }
+
+    update() {
+        this.vy += levelData.gravity;
+        this.y += this.vy;
+
+        let onAnything = false;
+        const bottom = canvas.height - GROUND_Y;
+
+        // Ground collision
+        if (this.y + this.size >= bottom) {
+            this.y = bottom - this.size;
+            this.vy = 0;
+            onAnything = true;
+        }
+
+        // Object collision (Landing on platforms)
+        objects.forEach(obj => {
+            if (obj.type === 'block') {
+                // Check if falling onto the top of a block
+                if (this.x + this.size > obj.x && this.x < obj.x + obj.w) {
+                    if (this.vy >= 0 && this.y + this.size <= obj.y + 15 && this.y + this.size + this.vy >= obj.y) {
+                        this.y = obj.y - this.size;
+                        this.vy = 0;
+                        onAnything = true;
+                    }
+                }
+            }
+        });
+
+        this.grounded = onAnything;
+        if (!this.grounded) {
+            this.rotation += 0.2;
+        } else {
+            this.rotation = Math.round(this.rotation / (Math.PI/2)) * (Math.PI/2);
+        }
+    }
+
+    draw() {
+        ctx.save();
+        ctx.translate(this.x + this.size/2, this.y + this.size/2);
+        ctx.rotate(this.rotation);
+        ctx.shadowBlur = 15;
+        ctx.shadowColor = levelData.color;
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(-this.size/2, -this.size/2, this.size, this.size);
+        ctx.fillStyle = levelData.color;
+        ctx.globalAlpha = 0.3;
+        ctx.fillRect(-this.size/2, -this.size/2, this.size, this.size);
+        ctx.restore();
+    }
+}
+
+class GameObject {
+    constructor(x, y, w, h, type) {
+        this.x = x;
+        this.y = y;
+        this.w = w;
+        this.h = h;
+        this.type = type; // 'block' or 'spike'
+    }
+
+    update() { this.x -= gameSpeed; }
+
+    draw() {
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = levelData.color;
+        if (this.type === 'block') {
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(this.x, this.y, this.w, this.h);
+            ctx.fillStyle = 'rgba(255,255,255,0.1)';
+            ctx.fillRect(this.x, this.y, this.w, this.h);
+        } else if (this.type === 'spike') {
+            ctx.fillStyle = 'white';
+            ctx.beginPath();
+            ctx.moveTo(this.x, this.y + this.h);
+            ctx.lineTo(this.x + this.w / 2, this.y);
+            ctx.lineTo(this.x + this.w, this.y + this.h);
+            ctx.fill();
+        }
+    }
+}
+
+function spawnPattern() {
+    const x = canvas.width + 100;
+    const ground = canvas.height - GROUND_Y;
+    const r = Math.random();
+
+    if (r < 0.4) {
+        // Single Spike
+        objects.push(new GameObject(x, ground - 40, 40, 40, 'spike'));
+    } else if (r < 0.7) {
+        // Platform + Spike on top
+        objects.push(new GameObject(x, ground - 40, 120, 40, 'block'));
+        objects.push(new GameObject(x + 40, ground - 80, 40, 40, 'spike'));
+    } else {
+        // Staircase
+        objects.push(new GameObject(x, ground - 40, 80, 40, 'block'));
+        objects.push(new GameObject(x + 80, ground - 80, 80, 40, 'block'));
+        objects.push(new GameObject(x + 160, ground - 120, 80, 40, 'block'));
+    }
+}
+
+function start(diff) {
+    levelData = LEVELS[diff];
+    gameSpeed = levelData.speed;
+    player = new Player();
+    objects = [];
+    state = 'PLAYING';
+    score = 0;
+    frameCount = 0;
+    mainMenu.classList.add('hidden');
+    gameOverScreen.classList.add('hidden');
+    loop();
+}
+
+function loop() {
+    if (state !== 'PLAYING') return;
+
+    ctx.fillStyle = levelData.bg;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Draw Floor
+    ctx.strokeStyle = levelData.color;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(-10, canvas.height - GROUND_Y, canvas.width + 20, GROUND_Y);
+
+    player.update();
+    player.draw();
+
+    if (frameCount % 80 === 0) spawnPattern();
+
+    for (let i = objects.length - 1; i >= 0; i--) {
+        const obj = objects[i];
+        obj.update();
+        obj.draw();
+
+        // Collision Logic
+        const p = player;
+        const hit = p.x < obj.x + obj.w && p.x + p.size > obj.x &&
+                    p.y < obj.y + obj.h && p.y + p.size > obj.y;
+
+        if (hit) {
+            if (obj.type === 'spike') {
+                state = 'GAMEOVER';
+                gameOverScreen.classList.remove('hidden');
+            } else if (obj.type === 'block') {
+                // If we hit the SIDE of a block, we die (GD style)
+                if (p.y + p.size > obj.y + 10) {
+                    state = 'GAMEOVER';
+                    gameOverScreen.classList.remove('hidden');
+                }
+            }
+        }
+
+        if (obj.x < -200) objects.splice(i, 1);
+    }
+
+    score++;
+    scoreEl.innerText = Math.floor(score/10);
+    frameCount++;
+    requestAnimationFrame(loop);
+}
+
+// Global Jump Handler
+const jump = () => { if (state === 'PLAYING' && player.grounded) player.vy = -14; };
+window.addEventListener('keydown', (e) => { if (e.code === 'Space') jump(); });
+window.addEventListener('mousedown', jump);
+window.addEventListener('touchstart', jump);
+
+</script>
+</body>
+</html>
